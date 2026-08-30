@@ -12,12 +12,33 @@ const MAX_OCCURRENCES = 750;
 
 // ---------------------------------------------------------------- arguments
 
+const VALID_EVENT_FORMATS = new Set(['default', 'compact', 'schedule']);
+const EVENT_FORMAT_ALIASES = {
+  default: 'default',
+  compact: 'compact',
+  schedule: 'schedule',
+  name: 'schedule',
+  'schedule-name': 'schedule',
+};
+
+function normalizeEventFormat(value) {
+  const format = String(value ?? 'default').trim().toLowerCase();
+  const normalized = EVENT_FORMAT_ALIASES[format] || format;
+  if (!VALID_EVENT_FORMATS.has(normalized)) {
+    throw new Error(
+      `unknown event format: ${format}; expected one of: ${[...VALID_EVENT_FORMATS].join(', ')}`,
+    );
+  }
+  return normalized;
+}
+
 function parseArgs(argv) {
   const opts = {
     months: 6,
     out: 'actual-schedules.ics',
     calendarName: 'Actual — Scheduled',
     includeCompleted: false,
+    eventFormat: 'default',
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -44,6 +65,9 @@ function parseArgs(argv) {
       case '--currency':
         opts.currency = need().toUpperCase();
         break;
+      case '--event-format':
+        opts.eventFormat = normalizeEventFormat(need());
+        break;
       case '--include-completed':
         opts.includeCompleted = true;
         break;
@@ -62,7 +86,12 @@ const USAGE = `actual2ics — write Actual Budget's scheduled transactions to an
 
   actual2ics [--months 6] [--out actual-schedules.ics]
              [--calendar-name "Actual — Scheduled"] [--currency USD]
-             [--include-completed]
+             [--event-format default|compact|schedule] [--include-completed]
+
+Event formats:
+  default  = Payee and amount is the summary, details include account/schedule/status
+  compact  = Payee is the summary, amount on its own line, then account/schedule/status
+  schedule = Schedule name is the summary, description includes a separate amount line before account/status
 
 Amounts follow the budget's own currency setting. Actual leaves that unset by
 default and shows no symbol; --currency adds one without changing the budget.
@@ -147,6 +176,49 @@ function describeAmount(amount, format) {
     return `${format(lo)}–${format(hi)}`;
   }
   return format(Number(amount));
+}
+
+function buildEventDetails({
+  payee,
+  account,
+  amount,
+  scheduleName,
+  postsAutomatically,
+  eventFormat = 'default',
+}) {
+  const format = normalizeEventFormat(eventFormat);
+  if (format === 'compact') {
+    const detail = [];
+    if (amount) detail.push(`Amount: ${amount}`);
+    detail.push(`Account: ${account}`);
+    if (scheduleName) detail.push(`Schedule: ${scheduleName}`);
+    if (postsAutomatically) detail.push('Posts automatically');
+    return {
+      summary: payee,
+      description: detail.join('\n'),
+    };
+  }
+
+  if (format === 'schedule') {
+    const detail = [];
+    if (payee) detail.push(`Description: ${payee}`);
+    if (amount) detail.push(`Amount: ${amount}`);
+    detail.push(`Account: ${account}`);
+    if (postsAutomatically) detail.push('Posts automatically');
+    return {
+      summary: scheduleName || payee,
+      description: detail.join('\n'),
+    };
+  }
+
+  const summary = amount ? `${payee} ${amount}` : payee;
+  const detail = [`Account: ${account}`];
+  if (scheduleName) detail.push(`Schedule: ${scheduleName}`);
+  if (postsAutomatically) detail.push('Posts automatically');
+  return {
+    summary,
+    description: detail.join('\n'),
+  };
 }
 
 // ---------------------------------------------------------------------- ics
@@ -251,7 +323,14 @@ async function openBudget(conn, env) {
 
 // ------------------------------------------------------------------ collect
 
-export async function collectEvents({ lib, months, includeCompleted, currency, today = new Date() }) {
+export async function collectEvents({
+  lib,
+  months,
+  includeCompleted,
+  currency,
+  eventFormat = 'default',
+  today = new Date(),
+}) {
   const [schedules, accounts, payees, prefs] = await Promise.all([
     api.getSchedules(),
     api.getAccounts(),
@@ -300,10 +379,14 @@ export async function collectEvents({ lib, months, includeCompleted, currency, t
     const payee = payeeName.get(schedule.payee) || 'Unknown payee';
     const account = accountName.get(schedule.account) || 'Unknown account';
     const amount = describeAmount(schedule.amount, format);
-    const summary = amount ? `${payee} ${amount}` : payee;
-    const detail = [`Account: ${account}`];
-    if (schedule.name) detail.push(`Schedule: ${schedule.name}`);
-    if (schedule.posts_transaction) detail.push('Posts automatically');
+    const { summary, description } = buildEventDetails({
+      payee,
+      account,
+      amount,
+      scheduleName: schedule.name,
+      postsAutomatically: !!schedule.posts_transaction,
+      eventFormat,
+    });
 
     for (const iso of dates) {
       const date = parseISO(iso);
@@ -312,7 +395,7 @@ export async function collectEvents({ lib, months, includeCompleted, currency, t
         uid: `${schedule.id}-${iso.replace(/-/g, '')}@actual2ics`,
         date,
         summary,
-        description: detail.join('\n'),
+        description,
       });
     }
   }
@@ -353,6 +436,7 @@ async function main() {
       months: opts.months,
       includeCompleted: opts.includeCompleted,
       currency: opts.currency,
+      eventFormat: opts.eventFormat,
     });
 
     const ics = buildCalendar({
@@ -375,7 +459,18 @@ async function main() {
 }
 
 // Exported for the tests; main only runs when this file is the entry point.
-export { parseArgs, occurrenceBudget, describeAmount, makeAmountFormatter, fold, escapeText, buildCalendar, addMonthsUTC, ymd };
+export {
+  parseArgs,
+  occurrenceBudget,
+  describeAmount,
+  makeAmountFormatter,
+  buildEventDetails,
+  fold,
+  escapeText,
+  buildCalendar,
+  addMonthsUTC,
+  ymd,
+};
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((err) => {
