@@ -2,3 +2,5 @@ node_modules/
 .actual-data/
 *.ics
 .DS_Store
+.vscode/launch.json
+.env

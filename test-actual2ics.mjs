@@ -11,6 +11,7 @@ import {
   buildCalendar,
   addMonthsUTC,
   ymd,
+  buildEventDetails,
 } from './actual2ics.mjs';
 
 test('defaults', () => {
@@ -21,10 +22,46 @@ test('defaults', () => {
 });
 
 test('flags parse', () => {
-  const o = parseArgs(['--months', '12', '--out', 'x.ics', '--include-completed']);
+  const o = parseArgs(['--months', '12', '--out', 'x.ics', '--include-completed', '--event-format', 'compact']);
   assert.equal(o.months, 12);
   assert.equal(o.out, 'x.ics');
   assert.equal(o.includeCompleted, true);
+  assert.equal(o.eventFormat, 'compact');
+});
+
+test('event format styles change the generated summary and description', () => {
+  const defaultEv = buildEventDetails({
+    payee: 'Rent Co',
+    account: 'Checking',
+    amount: '$1,200.00',
+    scheduleName: 'Rent',
+    postsAutomatically: true,
+    eventFormat: 'default',
+  });
+  const compactEv = buildEventDetails({
+    payee: 'Rent Co',
+    account: 'Checking',
+    amount: '$1,200.00',
+    scheduleName: 'Rent',
+    postsAutomatically: true,
+    eventFormat: 'compact',
+  });
+  const scheduleEv = buildEventDetails({
+    payee: 'Rent Co',
+    account: 'Checking',
+    amount: '$1,200.00',
+    scheduleName: 'Rent',
+    postsAutomatically: true,
+    eventFormat: 'schedule',
+  });
+
+  assert.equal(defaultEv.summary, 'Rent Co $1,200.00');
+  assert.equal(defaultEv.description, 'Account: Checking\nSchedule: Rent\nPosts automatically');
+  assert.equal(compactEv.summary, 'Rent Co');
+  assert.equal(compactEv.description, 'Amount: $1,200.00\nAccount: Checking\nSchedule: Rent\nPosts automatically');
+  assert.equal(scheduleEv.summary, 'Rent');
+  assert.equal(scheduleEv.description, 'Description: Rent Co\nAmount: $1,200.00\nAccount: Checking\nPosts automatically');
+  assert.throws(() => buildEventDetails({ eventFormat: 'unknown' }), /unknown event format/i);
 });
 
 test('bad months are refused, not coerced', () => {

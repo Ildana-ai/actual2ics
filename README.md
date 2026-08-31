@@ -103,7 +103,8 @@ piling up duplicates.
 | `--months N` | `6` | How far ahead to project, 1 to 120 |
 | `--out PATH` | `actual-schedules.ics` | Where to write the file |
 | `--calendar-name NAME` | `Actual — Scheduled` | The name your calendar app shows |
-| `--currency CODE` | budget's setting | Adds a currency symbol, e.g. `USD`, `EUR` |
+| `--currency CODE` | budget's setting | Adds a currency symbol, e.g. `USD`, `EUR`, `CAD` |
+| `--event-format MODE` | `default` | Changes the event summary/description style. `default` keeps the payee and amount in the summary; `compact` uses the payee as the summary and puts the amount on its own line in the details; `schedule` uses the schedule name as the event title, and puts the payee and the amount on separate lines in the details |
 | `--include-completed` | off | Also emit schedules Actual has marked completed |
 | `--help` | | Print usage |
 
