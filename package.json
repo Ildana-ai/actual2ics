@@ -1,13 +1,25 @@
 {
   "name": "actual2ics",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Write Actual Budget's scheduled transactions to an .ics calendar file. Runs entirely on your own machine.",
   "type": "module",
-  "bin": { "actual2ics": "./actual2ics.mjs" },
+  "bin": {
+    "actual2ics": "./actual2ics.mjs"
+  },
   "main": "./actual2ics.mjs",
-  "files": ["actual2ics.mjs", "README.md", "LICENSE"],
-  "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test" },
+  "files": [
+    "actual2ics.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
   "license": "MIT",
-  "dependencies": { "@actual-app/api": "^26.8.1" }
+  "dependencies": {
+    "@actual-app/api": "^26.8.1"
+  }
 }
