@@ -22,11 +22,12 @@ test('defaults', () => {
 });
 
 test('flags parse', () => {
-  const o = parseArgs(['--months', '12', '--out', 'x.ics', '--include-completed', '--event-format', 'compact']);
+  const o = parseArgs(['--months', '12', '--out', 'x.ics', '--include-completed', '--event-format', 'compact', '--reminder', '15m']);
   assert.equal(o.months, 12);
   assert.equal(o.out, 'x.ics');
   assert.equal(o.includeCompleted, true);
   assert.equal(o.eventFormat, 'compact');
+  assert.equal(o.reminder, '15m');
 });
 
 test('event format styles change the generated summary and description', () => {
@@ -141,6 +142,25 @@ test('the same schedule and date always produce the same UID', () => {
   const a = buildCalendar({ name: 'T', stamp: '20260829T000000Z', events: [ev] });
   const b = buildCalendar({ name: 'T', stamp: '20260829T000000Z', events: [ev] });
   assert.equal(a, b);
+});
+
+test('alarm values generate a VALARM with the correct trigger offset', () => {
+  const ics = buildCalendar({
+    name: 'Test',
+    stamp: '20260829T000000Z',
+    events: [{
+      uid: 'abc-20260901@actual2ics',
+      date: new Date('2026-09-01T00:00:00Z'),
+      summary: 'Rent Co -$1,200.00',
+      description: 'Account: Checking',
+      reminder: '15m',
+    }],
+  });
+
+  assert.ok(ics.includes('BEGIN:VALARM'));
+  assert.ok(ics.includes('TRIGGER:-PT15M'));
+  assert.ok(ics.includes('ACTION:DISPLAY'));
+  assert.ok(ics.includes('DESCRIPTION:Reminder'));
 });
 
 test('month arithmetic clamps to the end of short months', () => {

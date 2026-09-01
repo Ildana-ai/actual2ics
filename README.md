@@ -72,6 +72,13 @@ months. Pick your own window and destination:
 actual2ics --months 12 --out ~/Calendars/money.ics
 ```
 
+Add a calendar reminder to each event with `--reminder`. Use a positive number
+followed by `m` for minutes, `h` for hours, or `d` for days:
+
+```bash
+actual2ics --reminder 15m
+```
+
 Every scheduled transaction becomes an all-day event on the day it is due:
 
 ```
@@ -105,6 +112,7 @@ piling up duplicates.
 | `--calendar-name NAME` | `Actual — Scheduled` | The name your calendar app shows |
 | `--currency CODE` | budget's setting | Adds a currency symbol, e.g. `USD`, `EUR`, `CAD` |
 | `--event-format MODE` | `default` | Changes the event summary/description style. `default` keeps the payee and amount in the summary; `compact` uses the payee as the summary and puts the amount on its own line in the details; `schedule` uses the schedule name as the event title, and puts the payee and the amount on separate lines in the details |
+| `--reminder TIME` | off | Adds a display reminder before each event. Use values such as `15m`, `15h`, or `1d` |
 | `--include-completed` | off | Also emit schedules Actual has marked completed |
 | `--help` | | Print usage |
 
