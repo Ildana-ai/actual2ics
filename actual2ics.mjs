@@ -32,6 +32,40 @@ function normalizeEventFormat(value) {
   return normalized;
 }
 
+// A reminder is written the way a person says it: 30m, 2h, 1d. Normalised once,
+// here, so the rest of the program only ever sees an RFC 5545 trigger.
+function parseReminder(value) {
+  const raw = String(value).trim().toLowerCase();
+  const match = /^(\d+)([mhd])$/.exec(raw);
+  const amount = match ? Number(match[1]) : 0;
+  if (!match || amount < 1 || amount > 999) {
+    throw new Error('--remind takes Nm, Nh or Nd, e.g. 30m, 2h, 1d');
+  }
+  return { m: `-PT${amount}M`, h: `-PT${amount}H`, d: `-P${amount}D` }[match[2]];
+}
+
+// Names come from the user; ids are what the schedules carry. A name that matches
+// no account is a typo, and a typo must not quietly exclude nothing.
+export function resolveExcludes(excludeNames, accounts) {
+  const byName = new Map();
+  for (const account of accounts) {
+    const key = String(account.name ?? '').trim().toLowerCase();
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(account.id);
+  }
+  const ids = new Set();
+  for (const name of excludeNames) {
+    const hits = byName.get(String(name).trim().toLowerCase());
+    if (!hits) {
+      const err = new Error(`unknown account: ${name}`);
+      err.userError = true; // a typo, not a crash — main reports it like a bad flag
+      throw err;
+    }
+    for (const id of hits) ids.add(id);
+  }
+  return ids;
+}
+
 function parseArgs(argv) {
   const opts = {
     months: 6,
@@ -39,6 +73,8 @@ function parseArgs(argv) {
     calendarName: 'Actual — Scheduled',
     includeCompleted: false,
     eventFormat: 'default',
+    remind: [],
+    excludeAccounts: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -68,6 +104,14 @@ function parseArgs(argv) {
       case '--event-format':
         opts.eventFormat = normalizeEventFormat(need());
         break;
+      case '--remind': {
+        const trigger = parseReminder(need());
+        if (!opts.remind.includes(trigger)) opts.remind.push(trigger);
+        break;
+      }
+      case '--exclude-account':
+        opts.excludeAccounts.push(need());
+        break;
       case '--include-completed':
         opts.includeCompleted = true;
         break;
@@ -86,12 +130,21 @@ const USAGE = `actual2ics — write Actual Budget's scheduled transactions to an
 
   actual2ics [--months 6] [--out actual-schedules.ics]
              [--calendar-name "Actual — Scheduled"] [--currency USD]
-             [--event-format default|compact|schedule] [--include-completed]
+             [--event-format default|compact|schedule] [--remind 1d] [--remind 2h]
+             [--exclude-account "Name"] [--include-completed]
 
 Event formats:
   default  = Payee and amount is the summary, details include account/schedule/status
   compact  = Payee is the summary, amount on its own line, then account/schedule/status
   schedule = Schedule name is the summary, description includes a separate amount line before account/status
+
+--remind adds a reminder that many calendar apps will alert on. Repeat it for more
+than one. Events are all-day, so the countdown starts at the beginning of that day,
+and precisely when an alert fires is up to the calendar app.
+
+--exclude-account keeps an account out of the calendar. Repeat it for more than one.
+Match is on the account name as Actual shows it, ignoring case; a name that matches
+no account is an error rather than a silent no-op.
 
 Amounts follow the budget's own currency setting. Actual leaves that unset by
 default and shows no symbol; --currency adds one without changing the budget.
@@ -248,7 +301,7 @@ function fold(line) {
   return parts.join('\r\n ');
 }
 
-function buildCalendar({ name, events, stamp }) {
+function buildCalendar({ name, events, stamp, alarms = [] }) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -267,8 +320,19 @@ function buildCalendar({ name, events, stamp }) {
       `SUMMARY:${escapeText(ev.summary)}`,
       `DESCRIPTION:${escapeText(ev.description)}`,
       'TRANSP:TRANSPARENT',
-      'END:VEVENT',
     );
+    for (const trigger of alarms) {
+      // ACTION:DISPLAY requires a DESCRIPTION; the event's own summary is what a
+      // person wants to read on the alert.
+      lines.push(
+        'BEGIN:VALARM',
+        'ACTION:DISPLAY',
+        `DESCRIPTION:${escapeText(ev.summary)}`,
+        `TRIGGER:${trigger}`,
+        'END:VALARM',
+      );
+    }
+    lines.push('END:VEVENT');
   }
   lines.push('END:VCALENDAR');
   return lines.map(fold).join('\r\n') + '\r\n';
@@ -329,6 +393,7 @@ export async function collectEvents({
   includeCompleted,
   currency,
   eventFormat = 'default',
+  excludeAccounts = [],
   today = new Date(),
 }) {
   const [schedules, accounts, payees, prefs] = await Promise.all([
@@ -345,11 +410,20 @@ export async function collectEvents({
   const windowStart = parseISO(today.toISOString().slice(0, 10));
   const windowEnd = addMonthsUTC(windowStart, months);
 
+  const excludedIds = resolveExcludes(excludeAccounts, accounts);
+
   const events = [];
   const skipped = [];
+  let excludedSchedules = 0;
+  const excludedAccountIds = new Set();
 
   for (const schedule of schedules) {
     if (schedule.completed && !includeCompleted) continue;
+    if (schedule.account && excludedIds.has(schedule.account)) {
+      excludedSchedules++;
+      excludedAccountIds.add(schedule.account);
+      continue;
+    }
 
     let dates;
     if (typeof schedule.date === 'string') {
@@ -401,7 +475,13 @@ export async function collectEvents({
   }
 
   events.sort((a, b) => a.date - b.date || a.uid.localeCompare(b.uid));
-  return { events, skipped, scheduleCount: schedules.length };
+  return {
+    events,
+    skipped,
+    scheduleCount: schedules.length,
+    excludedSchedules,
+    excludedAccounts: excludedAccountIds.size,
+  };
 }
 
 // --------------------------------------------------------------------- main
@@ -431,26 +511,33 @@ async function main() {
 
   const lib = await openBudget(conn, process.env);
   try {
-    const { events, skipped, scheduleCount } = await collectEvents({
-      lib,
-      months: opts.months,
-      includeCompleted: opts.includeCompleted,
-      currency: opts.currency,
-      eventFormat: opts.eventFormat,
-    });
+    const { events, skipped, scheduleCount, excludedSchedules, excludedAccounts } =
+      await collectEvents({
+        lib,
+        months: opts.months,
+        includeCompleted: opts.includeCompleted,
+        currency: opts.currency,
+        eventFormat: opts.eventFormat,
+        excludeAccounts: opts.excludeAccounts,
+      });
 
     const ics = buildCalendar({
       name: opts.calendarName,
       events,
       stamp: `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}Z`,
+      alarms: opts.remind,
     });
     const outPath = resolve(opts.out);
     await writeFile(outPath, ics, 'utf8');
 
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    const excluded = opts.excludeAccounts.length
+      ? `, excluded ${plural(excludedSchedules, 'schedule')} in ` +
+        `${plural(excludedAccounts, 'account')}`
+      : '';
     process.stdout.write(
-      `${events.length} event${events.length === 1 ? '' : 's'} from ${scheduleCount} ` +
-        `schedule${scheduleCount === 1 ? '' : 's'} over ${opts.months} month` +
-        `${opts.months === 1 ? '' : 's'} → ${outPath}\n`,
+      `${plural(events.length, 'event')} from ${plural(scheduleCount, 'schedule')} ` +
+        `over ${plural(opts.months, 'month')}${excluded} → ${outPath}\n`,
     );
     for (const note of skipped) process.stderr.write(`skipped ${note}\n`);
   } finally {
@@ -461,6 +548,7 @@ async function main() {
 // Exported for the tests; main only runs when this file is the entry point.
 export {
   parseArgs,
+  parseReminder,
   occurrenceBudget,
   describeAmount,
   makeAmountFormatter,
@@ -474,6 +562,11 @@ export {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((err) => {
+    if (err?.userError) {
+      process.stderr.write(`${err.message}\n`);
+      process.exitCode = 2;
+      return;
+    }
     process.stderr.write(`${err.stack || err}\n`);
     process.exitCode = 1;
   });

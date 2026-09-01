@@ -12,6 +12,8 @@ import {
   addMonthsUTC,
   ymd,
   buildEventDetails,
+  parseReminder,
+  resolveExcludes,
 } from './actual2ics.mjs';
 
 test('defaults', () => {
@@ -153,4 +155,102 @@ test('--currency overrides a budget with no currency preference', () => {
   const o = parseArgs(['--currency', 'gbp']);
   assert.equal(o.currency, 'GBP');
   assert.equal(describeAmount(-120000, makeAmountFormatter(o.currency)), '-£1,200.00');
+});
+
+// --------------------------------------------------------------- --remind
+
+test('each reminder unit becomes the right RFC 5545 trigger', () => {
+  assert.equal(parseReminder('30m'), '-PT30M');
+  assert.equal(parseReminder('2h'), '-PT2H');
+  assert.equal(parseReminder('1d'), '-P1D');
+  assert.equal(parseReminder('999d'), '-P999D');
+  assert.equal(parseReminder('1D'), '-P1D');
+});
+
+test('nonsense reminders are refused', () => {
+  for (const bad of ['0m', '5x', 'm', '1000d', '', '-1d', '1.5h', '1 d']) {
+    assert.throws(() => parseReminder(bad), /--remind takes/);
+  }
+});
+
+test('reminders accumulate in order and duplicates collapse', () => {
+  const o = parseArgs(['--remind', '1d', '--remind', '2h', '--remind', '1d']);
+  assert.deepEqual(o.remind, ['-P1D', '-PT2H']);
+  assert.deepEqual(parseArgs([]).remind, []);
+  assert.throws(() => parseArgs(['--remind']), /needs a value/);
+});
+
+test('every event carries every reminder, and the alert text is the event summary', () => {
+  const events = [
+    { uid: 'a@x', date: new Date('2026-09-01T00:00:00Z'), summary: 'Rent Co -$1,200.00', description: 'd' },
+    { uid: 'b@x', date: new Date('2026-09-02T00:00:00Z'), summary: 'Gym; Unlimited', description: 'd' },
+  ];
+  const ics = buildCalendar({ name: 'T', stamp: '20260901T000000Z', events, alarms: ['-P1D', '-PT2H'] });
+  assert.equal((ics.match(/BEGIN:VALARM/g) || []).length, 4);
+  assert.equal((ics.match(/END:VALARM/g) || []).length, 4);
+  assert.equal((ics.match(/ACTION:DISPLAY/g) || []).length, 4);
+  assert.ok(ics.includes('TRIGGER:-P1D'));
+  assert.ok(ics.includes('TRIGGER:-PT2H'));
+  // The alarm description is escaped the same way the summary is.
+  assert.ok(ics.includes('DESCRIPTION:Gym\\; Unlimited'));
+  // Alarms sit inside the event, never after it.
+  assert.ok(/BEGIN:VALARM[\s\S]*?END:VALARM\r\nEND:VEVENT/.test(ics));
+});
+
+test('no reminders means no VALARM at all', () => {
+  const events = [{ uid: 'a@x', date: new Date('2026-09-01T00:00:00Z'), summary: 's', description: 'd' }];
+  const ics = buildCalendar({ name: 'T', stamp: '20260901T000000Z', events });
+  assert.ok(!ics.includes('VALARM'));
+  assert.equal(ics, buildCalendar({ name: 'T', stamp: '20260901T000000Z', events, alarms: [] }));
+});
+
+// ------------------------------------------------------- --exclude-account
+
+const ACCOUNTS = [
+  { id: 'a1', name: 'Checking' },
+  { id: 'a2', name: 'Prepaid Amortization' },
+  { id: 'a3', name: 'Savings' },
+];
+
+test('accounts are excluded by name, ignoring case and surrounding space', () => {
+  assert.deepEqual([...resolveExcludes(['prepaid amortization'], ACCOUNTS)], ['a2']);
+  assert.deepEqual([...resolveExcludes(['  Checking  '], ACCOUNTS)], ['a1']);
+  assert.deepEqual(
+    [...resolveExcludes(['Checking', 'Savings'], ACCOUNTS)].sort(),
+    ['a1', 'a3'],
+  );
+});
+
+test('excluding nothing selects nothing', () => {
+  assert.equal(resolveExcludes([], ACCOUNTS).size, 0);
+});
+
+test('a name matching no account is an error, and the error quotes only what was typed', () => {
+  assert.throws(
+    () => resolveExcludes(['Prepaid Amortisation'], ACCOUNTS),
+    (err) => {
+      assert.match(err.message, /^unknown account: Prepaid Amortisation$/);
+      assert.ok(!err.message.includes('Checking'), 'must not list the other accounts');
+      return true;
+    },
+  );
+});
+
+test('two accounts sharing a name are both excluded', () => {
+  const dupes = [{ id: 'x1', name: 'Cash' }, { id: 'x2', name: 'cash' }];
+  assert.deepEqual([...resolveExcludes(['Cash'], dupes)].sort(), ['x1', 'x2']);
+});
+
+test('exclusions accumulate on the command line', () => {
+  const o = parseArgs(['--exclude-account', 'Checking', '--exclude-account', 'Savings']);
+  assert.deepEqual(o.excludeAccounts, ['Checking', 'Savings']);
+  assert.deepEqual(parseArgs([]).excludeAccounts, []);
+  assert.throws(() => parseArgs(['--exclude-account']), /needs a value/);
+});
+
+test('an unknown account is flagged as a user error, not a crash', () => {
+  assert.throws(
+    () => resolveExcludes(['Nope'], ACCOUNTS),
+    (err) => err.userError === true,
+  );
 });

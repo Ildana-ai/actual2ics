@@ -105,8 +105,38 @@ piling up duplicates.
 | `--calendar-name NAME` | `Actual — Scheduled` | The name your calendar app shows |
 | `--currency CODE` | budget's setting | Adds a currency symbol, e.g. `USD`, `EUR`, `CAD` |
 | `--event-format MODE` | `default` | Changes the event summary/description style. `default` keeps the payee and amount in the summary; `compact` uses the payee as the summary and puts the amount on its own line in the details; `schedule` uses the schedule name as the event title, and puts the payee and the amount on separate lines in the details |
+| `--remind SPAN` | none | Add a reminder, e.g. `30m`, `2h`, `1d`. Repeat for more than one |
+| `--exclude-account NAME` | none | Leave an account out. Repeat for more than one |
 | `--include-completed` | off | Also emit schedules Actual has marked completed |
 | `--help` | | Print usage |
+
+### Reminders
+
+`--remind` puts an alert on every event, and you can ask for more than one:
+
+```bash
+actual2ics --remind 1d --remind 2h
+```
+
+Say it the way you'd say it out loud — `30m`, `2h`, `1d`.
+
+One thing to know: these are all-day events, so the countdown runs from the start
+of the day the money moves. Calendar apps disagree about what "2 hours before an
+all-day event" means, so check where the first alert lands and adjust to taste.
+
+### Leaving accounts out
+
+Not every account belongs on a calendar. A tracking account that amortises
+prepaid expenses posts on schedule but is nothing you plan your week around:
+
+```bash
+actual2ics --exclude-account "Prepaid Amortization"
+```
+
+Repeat the flag for more than one account. Match is on the account name exactly
+as Actual shows it, ignoring capitals. A name that matches no account stops the
+run rather than quietly excluding nothing — a typo you can't see is worse than an
+error you can. When the flag is used, the summary line says how much it dropped.
 
 ### About amounts
 

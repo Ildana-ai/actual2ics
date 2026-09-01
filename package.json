@@ -1,6 +1,6 @@
 {
   "name": "actual2ics",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Write Actual Budget's scheduled transactions to an .ics calendar file. Runs entirely on your own machine.",
   "type": "module",
   "bin": {
