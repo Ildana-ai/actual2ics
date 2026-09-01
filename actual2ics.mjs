@@ -32,6 +32,31 @@ function normalizeEventFormat(value) {
   return normalized;
 }
 
+function normalizeReminder(value) {
+  const reminder = String(value ?? '').trim().toLowerCase();
+  const match = /^([1-9]\d*)([mhd])$/.exec(reminder);
+  if (!match) {
+    throw new Error('--reminder must use one of the forms 15m, 5h, or 1d');
+  }
+  return reminder;
+}
+
+function reminderToTrigger(value) {
+  const reminder = normalizeReminder(value);
+  const amount = Number(reminder.slice(0, -1));
+  const unit = reminder.at(-1);
+  switch (unit) {
+    case 'm':
+      return `-PT${amount}M`;
+    case 'h':
+      return `-PT${amount}H`;
+    case 'd':
+      return `-P${amount}D`;
+    default:
+      throw new Error(`unsupported reminder unit: ${unit}`);
+  }
+}
+
 function parseArgs(argv) {
   const opts = {
     months: 6,
@@ -68,6 +93,9 @@ function parseArgs(argv) {
       case '--event-format':
         opts.eventFormat = normalizeEventFormat(need());
         break;
+      case '--reminder':
+        opts.reminder = normalizeReminder(need());
+        break;
       case '--include-completed':
         opts.includeCompleted = true;
         break;
@@ -86,12 +114,15 @@ const USAGE = `actual2ics — write Actual Budget's scheduled transactions to an
 
   actual2ics [--months 6] [--out actual-schedules.ics]
              [--calendar-name "Actual — Scheduled"] [--currency USD]
-             [--event-format default|compact|schedule] [--include-completed]
+             [--event-format default|compact|schedule] [--reminder 15m]
+             [--include-completed]
 
 Event formats:
   default  = Payee and amount is the summary, details include account/schedule/status
   compact  = Payee is the summary, amount on its own line, then account/schedule/status
   schedule = Schedule name is the summary, description includes a separate amount line before account/status
+
+Reminder values use the form 15m, 15h, or 1d and add a VALARM trigger before the event.
 
 Amounts follow the budget's own currency setting. Actual leaves that unset by
 default and shows no symbol; --currency adds one without changing the budget.
@@ -267,8 +298,17 @@ function buildCalendar({ name, events, stamp }) {
       `SUMMARY:${escapeText(ev.summary)}`,
       `DESCRIPTION:${escapeText(ev.description)}`,
       'TRANSP:TRANSPARENT',
-      'END:VEVENT',
     );
+    if (ev.reminder) {
+      lines.push(
+        'BEGIN:VALARM',
+        'ACTION:DISPLAY',
+        'DESCRIPTION:Reminder',
+        `TRIGGER:${reminderToTrigger(ev.reminder)}`,
+        'END:VALARM',
+      );
+    }
+    lines.push('END:VEVENT');
   }
   lines.push('END:VCALENDAR');
   return lines.map(fold).join('\r\n') + '\r\n';
@@ -329,6 +369,7 @@ export async function collectEvents({
   includeCompleted,
   currency,
   eventFormat = 'default',
+  reminder,
   today = new Date(),
 }) {
   const [schedules, accounts, payees, prefs] = await Promise.all([
@@ -396,6 +437,7 @@ export async function collectEvents({
         date,
         summary,
         description,
+        ...(reminder ? { reminder } : {}),
       });
     }
   }
@@ -437,6 +479,7 @@ async function main() {
       includeCompleted: opts.includeCompleted,
       currency: opts.currency,
       eventFormat: opts.eventFormat,
+      reminder: opts.reminder,
     });
 
     const ics = buildCalendar({
