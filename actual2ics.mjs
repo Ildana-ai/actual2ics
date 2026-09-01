@@ -32,38 +32,67 @@ function normalizeEventFormat(value) {
   return normalized;
 }
 
-// A reminder is written the way a person says it: 30m, 2h, 1d. Normalised once,
-// here, so the rest of the program only ever sees an RFC 5545 trigger.
-function parseReminder(value) {
-  const raw = String(value).trim().toLowerCase();
-  const match = /^(\d+)([mhd])$/.exec(raw);
-  const amount = match ? Number(match[1]) : 0;
-  if (!match || amount < 1 || amount > 999) {
-    throw new Error('--remind takes Nm, Nh or Nd, e.g. 30m, 2h, 1d');
+function normalizeReminder(value) {
+  const reminder = String(value ?? '').trim().toLowerCase();
+  const match = /^([1-9]\d*)([mhd])$/.exec(reminder);
+  if (!match || Number(match[1]) > 999) {
+    throw new Error('--reminder must use one of the forms 15m, 5h, or 1d, up to 999');
   }
-  return { m: `-PT${amount}M`, h: `-PT${amount}H`, d: `-P${amount}D` }[match[2]];
+  return reminder;
+}
+
+function reminderToTrigger(value) {
+  const reminder = normalizeReminder(value);
+  const amount = Number(reminder.slice(0, -1));
+  const unit = reminder.at(-1);
+  switch (unit) {
+    case 'm':
+      return `-PT${amount}M`;
+    case 'h':
+      return `-PT${amount}H`;
+    case 'd':
+      return `-P${amount}D`;
+    default:
+      throw new Error(`unsupported reminder unit: ${unit}`);
+  }
+}
+
+// Minutes past midnight, so a time can be added to a date without a timezone.
+function parseAtTime(value) {
+  const match = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(value ?? '').trim());
+  if (!match) throw new Error('--at takes a 24-hour time, e.g. 09:00 or 17:30');
+  return Number(match[1]) * 60 + Number(match[2]);
 }
 
 // Names come from the user; ids are what the schedules carry. A name that matches
-// no account is a typo, and a typo must not quietly exclude nothing.
-export function resolveExcludes(excludeNames, accounts) {
+// nothing is a typo, and a typo must not quietly filter nothing.
+function resolveNames(names, records, label) {
   const byName = new Map();
-  for (const account of accounts) {
-    const key = String(account.name ?? '').trim().toLowerCase();
+  for (const record of records) {
+    const key = String(record.name ?? '').trim().toLowerCase();
+    if (!key) continue;
     if (!byName.has(key)) byName.set(key, []);
-    byName.get(key).push(account.id);
+    byName.get(key).push(record.id);
   }
   const ids = new Set();
-  for (const name of excludeNames) {
+  for (const name of names) {
     const hits = byName.get(String(name).trim().toLowerCase());
     if (!hits) {
-      const err = new Error(`unknown account: ${name}`);
+      const err = new Error(`unknown ${label}: ${name}`);
       err.userError = true; // a typo, not a crash — main reports it like a bad flag
       throw err;
     }
     for (const id of hits) ids.add(id);
   }
   return ids;
+}
+
+export function resolveExcludes(names, accounts) {
+  return resolveNames(names, accounts, 'account');
+}
+
+export function resolveSchedules(names, schedules) {
+  return resolveNames(names, schedules, 'schedule');
 }
 
 function parseArgs(argv) {
@@ -73,8 +102,11 @@ function parseArgs(argv) {
     calendarName: 'Actual — Scheduled',
     includeCompleted: false,
     eventFormat: 'default',
-    remind: [],
+    reminders: [],
+    at: null,
     excludeAccounts: [],
+    onlyAccounts: [],
+    excludeSchedules: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -104,13 +136,22 @@ function parseArgs(argv) {
       case '--event-format':
         opts.eventFormat = normalizeEventFormat(need());
         break;
-      case '--remind': {
-        const trigger = parseReminder(need());
-        if (!opts.remind.includes(trigger)) opts.remind.push(trigger);
+      case '--reminder': {
+        const reminder = normalizeReminder(need());
+        if (!opts.reminders.includes(reminder)) opts.reminders.push(reminder);
         break;
       }
+      case '--at':
+        opts.at = parseAtTime(need());
+        break;
       case '--exclude-account':
         opts.excludeAccounts.push(need());
+        break;
+      case '--only-account':
+        opts.onlyAccounts.push(need());
+        break;
+      case '--exclude-schedule':
+        opts.excludeSchedules.push(need());
         break;
       case '--include-completed':
         opts.includeCompleted = true;
@@ -123,6 +164,9 @@ function parseArgs(argv) {
         throw new Error(`unknown option: ${arg}`);
     }
   }
+  if (opts.excludeAccounts.length && opts.onlyAccounts.length) {
+    throw new Error('use --exclude-account or --only-account, not both');
+  }
   return opts;
 }
 
@@ -130,21 +174,26 @@ const USAGE = `actual2ics — write Actual Budget's scheduled transactions to an
 
   actual2ics [--months 6] [--out actual-schedules.ics]
              [--calendar-name "Actual — Scheduled"] [--currency USD]
-             [--event-format default|compact|schedule] [--remind 1d] [--remind 2h]
-             [--exclude-account "Name"] [--include-completed]
+             [--event-format default|compact|schedule] [--reminder 15m]
+             [--at 09:00] [--exclude-account "Name"] [--only-account "Name"]
+             [--exclude-schedule "Name"] [--include-completed]
 
 Event formats:
   default  = Payee and amount is the summary, details include account/schedule/status
   compact  = Payee is the summary, amount on its own line, then account/schedule/status
   schedule = Schedule name is the summary, description includes a separate amount line before account/status
 
---remind adds a reminder that many calendar apps will alert on. Repeat it for more
-than one. Events are all-day, so the countdown starts at the beginning of that day,
-and precisely when an alert fires is up to the calendar app.
+Reminder values use the form 15m, 15h, or 1d, up to 999, and add a VALARM trigger
+before the event. Repeat --reminder for more than one alert.
 
---exclude-account keeps an account out of the calendar. Repeat it for more than one.
-Match is on the account name as Actual shows it, ignoring case; a name that matches
-no account is an error rather than a silent no-op.
+Events are all-day unless --at gives them a time, so a reminder counts back from the
+start of the day and calendar apps differ on when it fires. --at 09:00 makes the
+event an hour long at that local time, which makes the reminder exact.
+
+--exclude-account, --only-account and --exclude-schedule filter what reaches the
+calendar. All three repeat; matching is on the name Actual shows, ignoring case; a
+name that matches nothing is an error rather than a silent no-op. --exclude-account
+and --only-account cannot be used together.
 
 Amounts follow the budget's own currency setting. Actual leaves that unset by
 default and shows no symbol; --currency adds one without changing the budget.
@@ -167,6 +216,16 @@ const ymd = (d) =>
   ).padStart(2, '0')}`;
 
 const parseISO = (s) => new Date(`${s}T00:00:00Z`);
+
+// A local wall-clock stamp with no zone and no Z: every calendar app reads it in
+// its own timezone, which is what someone paying a bill at 09:00 means. Minutes
+// past midnight can push past 24h, so the date rolls over with it.
+function floating(date, minutes) {
+  const d = new Date(date.getTime() + minutes * 60000);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${ymd(d)}T${hh}${mm}00`;
+}
 
 function addDaysUTC(date, days) {
   const d = new Date(date.getTime());
@@ -301,7 +360,7 @@ function fold(line) {
   return parts.join('\r\n ');
 }
 
-function buildCalendar({ name, events, stamp, alarms = [] }) {
+function buildCalendar({ name, events, stamp, at = null }) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
@@ -315,20 +374,29 @@ function buildCalendar({ name, events, stamp, alarms = [] }) {
       'BEGIN:VEVENT',
       `UID:${ev.uid}`,
       `DTSTAMP:${stamp}`,
-      `DTSTART;VALUE=DATE:${ymd(ev.date)}`,
-      `DTEND;VALUE=DATE:${ymd(addDaysUTC(ev.date, 1))}`,
+      // Without --at these are whole days; with it they are floating local times,
+      // which is what makes a relative reminder land at a predictable hour.
+      ...(at === null
+        ? [
+            `DTSTART;VALUE=DATE:${ymd(ev.date)}`,
+            `DTEND;VALUE=DATE:${ymd(addDaysUTC(ev.date, 1))}`,
+          ]
+        : [
+            `DTSTART:${floating(ev.date, at)}`,
+            `DTEND:${floating(ev.date, at + 60)}`,
+          ]),
       `SUMMARY:${escapeText(ev.summary)}`,
       `DESCRIPTION:${escapeText(ev.description)}`,
       'TRANSP:TRANSPARENT',
     );
-    for (const trigger of alarms) {
+    for (const reminder of ev.reminders ?? []) {
       // ACTION:DISPLAY requires a DESCRIPTION; the event's own summary is what a
-      // person wants to read on the alert.
+      // person wants to read on the alert, not the word "Reminder".
       lines.push(
         'BEGIN:VALARM',
         'ACTION:DISPLAY',
         `DESCRIPTION:${escapeText(ev.summary)}`,
-        `TRIGGER:${trigger}`,
+        `TRIGGER:${reminderToTrigger(reminder)}`,
         'END:VALARM',
       );
     }
@@ -393,7 +461,10 @@ export async function collectEvents({
   includeCompleted,
   currency,
   eventFormat = 'default',
+  reminders = [],
   excludeAccounts = [],
+  onlyAccounts = [],
+  excludeSchedules = [],
   today = new Date(),
 }) {
   const [schedules, accounts, payees, prefs] = await Promise.all([
@@ -410,18 +481,32 @@ export async function collectEvents({
   const windowStart = parseISO(today.toISOString().slice(0, 10));
   const windowEnd = addMonthsUTC(windowStart, months);
 
+  // Both account flags resolve through the same path, so a typo is caught either
+  // way; parseArgs has already refused the two of them together.
   const excludedIds = resolveExcludes(excludeAccounts, accounts);
+  const keptIds = resolveExcludes(onlyAccounts, accounts);
+  const excludedScheduleIds = resolveSchedules(excludeSchedules, schedules);
 
   const events = [];
   const skipped = [];
-  let excludedSchedules = 0;
-  const excludedAccountIds = new Set();
+  let droppedByAccount = 0;
+  let droppedBySchedule = 0;
+  const droppedAccountIds = new Set();
 
   for (const schedule of schedules) {
     if (schedule.completed && !includeCompleted) continue;
-    if (schedule.account && excludedIds.has(schedule.account)) {
-      excludedSchedules++;
-      excludedAccountIds.add(schedule.account);
+
+    const outOfScope = schedule.account
+      ? excludedIds.has(schedule.account) ||
+        (onlyAccounts.length > 0 && !keptIds.has(schedule.account))
+      : onlyAccounts.length > 0; // an account-less schedule is not on the whitelist
+    if (outOfScope) {
+      droppedByAccount++;
+      if (schedule.account) droppedAccountIds.add(schedule.account);
+      continue;
+    }
+    if (excludedScheduleIds.has(schedule.id)) {
+      droppedBySchedule++;
       continue;
     }
 
@@ -470,6 +555,7 @@ export async function collectEvents({
         date,
         summary,
         description,
+        ...(reminders.length ? { reminders } : {}),
       });
     }
   }
@@ -479,8 +565,9 @@ export async function collectEvents({
     events,
     skipped,
     scheduleCount: schedules.length,
-    excludedSchedules,
-    excludedAccounts: excludedAccountIds.size,
+    droppedByAccount,
+    droppedBySchedule,
+    droppedAccounts: droppedAccountIds.size,
   };
 }
 
@@ -511,33 +598,50 @@ async function main() {
 
   const lib = await openBudget(conn, process.env);
   try {
-    const { events, skipped, scheduleCount, excludedSchedules, excludedAccounts } =
-      await collectEvents({
-        lib,
-        months: opts.months,
-        includeCompleted: opts.includeCompleted,
-        currency: opts.currency,
-        eventFormat: opts.eventFormat,
-        excludeAccounts: opts.excludeAccounts,
-      });
+    const {
+      events,
+      skipped,
+      scheduleCount,
+      droppedByAccount,
+      droppedBySchedule,
+      droppedAccounts,
+    } = await collectEvents({
+      lib,
+      months: opts.months,
+      includeCompleted: opts.includeCompleted,
+      currency: opts.currency,
+      eventFormat: opts.eventFormat,
+      reminders: opts.reminders,
+      excludeAccounts: opts.excludeAccounts,
+      onlyAccounts: opts.onlyAccounts,
+      excludeSchedules: opts.excludeSchedules,
+    });
 
     const ics = buildCalendar({
       name: opts.calendarName,
       events,
       stamp: `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}Z`,
-      alarms: opts.remind,
+      at: opts.at,
     });
     const outPath = resolve(opts.out);
     await writeFile(outPath, ics, 'utf8');
 
+    // A filter that quietly stops matching is worse than one that reports zero.
     const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-    const excluded = opts.excludeAccounts.length
-      ? `, excluded ${plural(excludedSchedules, 'schedule')} in ` +
-        `${plural(excludedAccounts, 'account')}`
-      : '';
+    const notes = [];
+    if (opts.excludeAccounts.length || opts.onlyAccounts.length) {
+      notes.push(
+        `dropped ${plural(droppedByAccount, 'schedule')} in ` +
+          `${plural(droppedAccounts, 'account')}`,
+      );
+    }
+    if (opts.excludeSchedules.length) {
+      notes.push(`dropped ${plural(droppedBySchedule, 'schedule')} by name`);
+    }
     process.stdout.write(
       `${plural(events.length, 'event')} from ${plural(scheduleCount, 'schedule')} ` +
-        `over ${plural(opts.months, 'month')}${excluded} → ${outPath}\n`,
+        `over ${plural(opts.months, 'month')}` +
+        `${notes.length ? `, ${notes.join(', ')}` : ''} → ${outPath}\n`,
     );
     for (const note of skipped) process.stderr.write(`skipped ${note}\n`);
   } finally {
@@ -548,13 +652,16 @@ async function main() {
 // Exported for the tests; main only runs when this file is the entry point.
 export {
   parseArgs,
-  parseReminder,
+  normalizeReminder,
+  reminderToTrigger,
+  parseAtTime,
   occurrenceBudget,
   describeAmount,
   makeAmountFormatter,
   buildEventDetails,
   fold,
   escapeText,
+  floating,
   buildCalendar,
   addMonthsUTC,
   ymd,

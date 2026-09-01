@@ -72,6 +72,13 @@ months. Pick your own window and destination:
 actual2ics --months 12 --out ~/Calendars/money.ics
 ```
 
+Add a calendar reminder to each event with `--reminder`. Use a positive number
+followed by `m` for minutes, `h` for hours, or `d` for days:
+
+```bash
+actual2ics --reminder 15m
+```
+
 Every scheduled transaction becomes an all-day event on the day it is due:
 
 ```
@@ -105,26 +112,42 @@ piling up duplicates.
 | `--calendar-name NAME` | `Actual — Scheduled` | The name your calendar app shows |
 | `--currency CODE` | budget's setting | Adds a currency symbol, e.g. `USD`, `EUR`, `CAD` |
 | `--event-format MODE` | `default` | Changes the event summary/description style. `default` keeps the payee and amount in the summary; `compact` uses the payee as the summary and puts the amount on its own line in the details; `schedule` uses the schedule name as the event title, and puts the payee and the amount on separate lines in the details |
-| `--remind SPAN` | none | Add a reminder, e.g. `30m`, `2h`, `1d`. Repeat for more than one |
+| `--reminder TIME` | off | Adds a display reminder before each event. Use values such as `15m`, `15h`, or `1d`, up to 999. Repeat for more than one |
+| `--at HH:MM` | all-day | Give events a time instead of a whole day, e.g. `09:00`. One hour long |
 | `--exclude-account NAME` | none | Leave an account out. Repeat for more than one |
+| `--only-account NAME` | none | Keep only these accounts. Repeat for more than one. Not usable with `--exclude-account` |
+| `--exclude-schedule NAME` | none | Leave a named schedule out. Repeat for more than one |
 | `--include-completed` | off | Also emit schedules Actual has marked completed |
 | `--help` | | Print usage |
 
 ### Reminders
 
-`--remind` puts an alert on every event, and you can ask for more than one:
+Repeat `--reminder` to get more than one alert on every event:
 
 ```bash
-actual2ics --remind 1d --remind 2h
+actual2ics --reminder 1d --reminder 2h
 ```
 
-Say it the way you'd say it out loud — `30m`, `2h`, `1d`.
+Say it the way you'd say it out loud — `15m`, `2h`, `1d`, up to 999 of any unit.
 
-One thing to know: these are all-day events, so the countdown runs from the start
-of the day the money moves. Calendar apps disagree about what "2 hours before an
-all-day event" means, so check where the first alert lands and adjust to taste.
+One thing to know: events are all-day by default, so the countdown runs from the
+start of the day the money moves, and calendar apps disagree about what "2 hours
+before an all-day event" means. `--at` settles it.
 
-### Leaving accounts out
+### Giving events a time
+
+```bash
+actual2ics --at 09:00 --reminder 30m
+```
+
+Events become one hour long at that time instead of filling the whole day, so
+"30 minutes before" means 08:30 and nothing has to guess. The time is local to
+whoever opens the calendar — no timezone is written into the file, so the same
+feed reads correctly in every zone.
+
+Without `--at`, nothing changes: events stay all-day.
+
+### Choosing what appears
 
 Not every account belongs on a calendar. A tracking account that amortises
 prepaid expenses posts on schedule but is nothing you plan your week around:
@@ -133,10 +156,23 @@ prepaid expenses posts on schedule but is nothing you plan your week around:
 actual2ics --exclude-account "Prepaid Amortization"
 ```
 
-Repeat the flag for more than one account. Match is on the account name exactly
-as Actual shows it, ignoring capitals. A name that matches no account stops the
-run rather than quietly excluding nothing — a typo you can't see is worse than an
-error you can. When the flag is used, the summary line says how much it dropped.
+Or come at it from the other side and name only what you want:
+
+```bash
+actual2ics --only-account "Checking" --only-account "Credit Card"
+```
+
+Use one or the other — asking for both at once is an error rather than a guess.
+To silence a single schedule rather than a whole account:
+
+```bash
+actual2ics --exclude-schedule "Weekly transfer"
+```
+
+All three repeat. Matching is on the name exactly as Actual shows it, ignoring
+capitals. A name that matches nothing stops the run rather than quietly filtering
+nothing — a typo you can't see is worse than an error you can. When any of them
+is used, the summary line says how much it dropped.
 
 ### About amounts
 

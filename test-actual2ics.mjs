@@ -12,7 +12,11 @@ import {
   addMonthsUTC,
   ymd,
   buildEventDetails,
-  parseReminder,
+  normalizeReminder,
+  reminderToTrigger,
+  parseAtTime,
+  floating,
+  resolveSchedules,
   resolveExcludes,
 } from './actual2ics.mjs';
 
@@ -24,11 +28,12 @@ test('defaults', () => {
 });
 
 test('flags parse', () => {
-  const o = parseArgs(['--months', '12', '--out', 'x.ics', '--include-completed', '--event-format', 'compact']);
+  const o = parseArgs(['--months', '12', '--out', 'x.ics', '--include-completed', '--event-format', 'compact', '--reminder', '15m']);
   assert.equal(o.months, 12);
   assert.equal(o.out, 'x.ics');
   assert.equal(o.includeCompleted, true);
   assert.equal(o.eventFormat, 'compact');
+  assert.deepEqual(o.reminders, ['15m']);
 });
 
 test('event format styles change the generated summary and description', () => {
@@ -145,6 +150,26 @@ test('the same schedule and date always produce the same UID', () => {
   assert.equal(a, b);
 });
 
+test('alarm values generate a VALARM with the correct trigger offset', () => {
+  const ics = buildCalendar({
+    name: 'Test',
+    stamp: '20260829T000000Z',
+    events: [{
+      uid: 'abc-20260901@actual2ics',
+      date: new Date('2026-09-01T00:00:00Z'),
+      summary: 'Rent Co -$1,200.00',
+      description: 'Account: Checking',
+      reminders: ['15m'],
+    }],
+  });
+
+  assert.ok(ics.includes('BEGIN:VALARM'));
+  assert.ok(ics.includes('TRIGGER:-PT15M'));
+  assert.ok(ics.includes('ACTION:DISPLAY'));
+  // The alert says which bill, not the word "Reminder".
+  assert.ok(ics.includes('DESCRIPTION:Rent Co -$1\\,200.00'));
+});
+
 test('month arithmetic clamps to the end of short months', () => {
   assert.equal(ymd(addMonthsUTC(new Date('2026-01-31T00:00:00Z'), 1)), '20260228');
   assert.equal(ymd(addMonthsUTC(new Date('2026-08-29T00:00:00Z'), 6)), '20270228');
@@ -155,53 +180,6 @@ test('--currency overrides a budget with no currency preference', () => {
   const o = parseArgs(['--currency', 'gbp']);
   assert.equal(o.currency, 'GBP');
   assert.equal(describeAmount(-120000, makeAmountFormatter(o.currency)), '-£1,200.00');
-});
-
-// --------------------------------------------------------------- --remind
-
-test('each reminder unit becomes the right RFC 5545 trigger', () => {
-  assert.equal(parseReminder('30m'), '-PT30M');
-  assert.equal(parseReminder('2h'), '-PT2H');
-  assert.equal(parseReminder('1d'), '-P1D');
-  assert.equal(parseReminder('999d'), '-P999D');
-  assert.equal(parseReminder('1D'), '-P1D');
-});
-
-test('nonsense reminders are refused', () => {
-  for (const bad of ['0m', '5x', 'm', '1000d', '', '-1d', '1.5h', '1 d']) {
-    assert.throws(() => parseReminder(bad), /--remind takes/);
-  }
-});
-
-test('reminders accumulate in order and duplicates collapse', () => {
-  const o = parseArgs(['--remind', '1d', '--remind', '2h', '--remind', '1d']);
-  assert.deepEqual(o.remind, ['-P1D', '-PT2H']);
-  assert.deepEqual(parseArgs([]).remind, []);
-  assert.throws(() => parseArgs(['--remind']), /needs a value/);
-});
-
-test('every event carries every reminder, and the alert text is the event summary', () => {
-  const events = [
-    { uid: 'a@x', date: new Date('2026-09-01T00:00:00Z'), summary: 'Rent Co -$1,200.00', description: 'd' },
-    { uid: 'b@x', date: new Date('2026-09-02T00:00:00Z'), summary: 'Gym; Unlimited', description: 'd' },
-  ];
-  const ics = buildCalendar({ name: 'T', stamp: '20260901T000000Z', events, alarms: ['-P1D', '-PT2H'] });
-  assert.equal((ics.match(/BEGIN:VALARM/g) || []).length, 4);
-  assert.equal((ics.match(/END:VALARM/g) || []).length, 4);
-  assert.equal((ics.match(/ACTION:DISPLAY/g) || []).length, 4);
-  assert.ok(ics.includes('TRIGGER:-P1D'));
-  assert.ok(ics.includes('TRIGGER:-PT2H'));
-  // The alarm description is escaped the same way the summary is.
-  assert.ok(ics.includes('DESCRIPTION:Gym\\; Unlimited'));
-  // Alarms sit inside the event, never after it.
-  assert.ok(/BEGIN:VALARM[\s\S]*?END:VALARM\r\nEND:VEVENT/.test(ics));
-});
-
-test('no reminders means no VALARM at all', () => {
-  const events = [{ uid: 'a@x', date: new Date('2026-09-01T00:00:00Z'), summary: 's', description: 'd' }];
-  const ics = buildCalendar({ name: 'T', stamp: '20260901T000000Z', events });
-  assert.ok(!ics.includes('VALARM'));
-  assert.equal(ics, buildCalendar({ name: 'T', stamp: '20260901T000000Z', events, alarms: [] }));
 });
 
 // ------------------------------------------------------- --exclude-account
@@ -252,5 +230,119 @@ test('an unknown account is flagged as a user error, not a crash', () => {
   assert.throws(
     () => resolveExcludes(['Nope'], ACCOUNTS),
     (err) => err.userError === true,
+  );
+});
+
+// -------------------------------------------------------------- --reminder
+
+test('each reminder unit becomes the right RFC 5545 trigger', () => {
+  assert.equal(reminderToTrigger('30m'), '-PT30M');
+  assert.equal(reminderToTrigger('2h'), '-PT2H');
+  assert.equal(reminderToTrigger('1d'), '-P1D');
+  assert.equal(reminderToTrigger('999d'), '-P999D');
+  assert.equal(reminderToTrigger(' 1D '), '-P1D');
+});
+
+test('nonsense reminders are refused', () => {
+  for (const bad of ['0m', '5x', 'm', '1000d', '', '-1d', '1.5h', '1 d', '015m']) {
+    assert.throws(() => normalizeReminder(bad), /--reminder must use/);
+  }
+});
+
+test('reminders accumulate in order and duplicates collapse', () => {
+  const o = parseArgs(['--reminder', '1d', '--reminder', '2h', '--reminder', '1d']);
+  assert.deepEqual(o.reminders, ['1d', '2h']);
+  assert.deepEqual(parseArgs([]).reminders, []);
+  assert.throws(() => parseArgs(['--reminder']), /needs a value/);
+});
+
+test('every event carries every reminder, and the alert text is the event summary', () => {
+  const events = [
+    { uid: 'a@x', date: new Date('2026-09-01T00:00:00Z'), summary: 'Rent Co', description: 'd', reminders: ['1d', '2h'] },
+    { uid: 'b@x', date: new Date('2026-09-02T00:00:00Z'), summary: 'Gym; Unlimited', description: 'd', reminders: ['1d', '2h'] },
+  ];
+  const ics = buildCalendar({ name: 'T', stamp: '20260901T000000Z', events });
+  assert.equal((ics.match(/BEGIN:VALARM/g) || []).length, 4);
+  assert.equal((ics.match(/ACTION:DISPLAY/g) || []).length, 4);
+  assert.ok(ics.includes('TRIGGER:-P1D'));
+  assert.ok(ics.includes('TRIGGER:-PT2H'));
+  assert.ok(ics.includes('DESCRIPTION:Gym\\; Unlimited'));
+  // Alarms sit inside the event, never after it.
+  assert.ok(/BEGIN:VALARM[\s\S]*?END:VALARM\r\nEND:VEVENT/.test(ics));
+});
+
+test('no reminders means no VALARM at all', () => {
+  const events = [{ uid: 'a@x', date: new Date('2026-09-01T00:00:00Z'), summary: 's', description: 'd' }];
+  assert.ok(!buildCalendar({ name: 'T', stamp: '20260901T000000Z', events }).includes('VALARM'));
+});
+
+// --------------------------------------------------------------------- --at
+
+test('times parse to minutes past midnight', () => {
+  assert.equal(parseAtTime('00:00'), 0);
+  assert.equal(parseAtTime('9:05'), 545);
+  assert.equal(parseAtTime('09:05'), 545);
+  assert.equal(parseAtTime('23:59'), 1439);
+});
+
+test('impossible times are refused', () => {
+  for (const bad of ['24:00', '9:60', '25:00', '0900', '9', '', '9:5', '-1:00']) {
+    assert.throws(() => parseAtTime(bad), /--at takes a 24-hour time/);
+  }
+});
+
+test('a floating stamp carries no zone and rolls the date over midnight', () => {
+  const day = new Date('2026-09-01T00:00:00Z');
+  assert.equal(floating(day, 0), '20260901T000000');
+  assert.equal(floating(day, 545), '20260901T090500');
+  assert.equal(floating(day, 23 * 60 + 30 + 60), '20260902T003000');
+});
+
+test('--at turns whole days into one-hour local events', () => {
+  const events = [{ uid: 'a@x', date: new Date('2026-09-01T00:00:00Z'), summary: 's', description: 'd' }];
+  const timed = buildCalendar({ name: 'T', stamp: '20260901T000000Z', events, at: parseAtTime('09:00') });
+  assert.ok(timed.includes('DTSTART:20260901T090000'));
+  assert.ok(timed.includes('DTEND:20260901T100000'));
+  assert.ok(!timed.includes('VALUE=DATE'), 'timed events must not be all-day');
+  assert.ok(!/DTSTART[^\r]*Z/.test(timed), 'no UTC marker: the time is local to the reader');
+
+  const allDay = buildCalendar({ name: 'T', stamp: '20260901T000000Z', events });
+  assert.ok(allDay.includes('DTSTART;VALUE=DATE:20260901'));
+  assert.ok(allDay.includes('DTEND;VALUE=DATE:20260902'));
+});
+
+// ----------------------------------------------- --only / --exclude-schedule
+
+const SCHEDULES = [
+  { id: 's1', name: 'Rent' },
+  { id: 's2', name: 'Weekly transfer' },
+  { id: 's3' },
+];
+
+test('schedules resolve by name and an unknown one is a user error', () => {
+  assert.deepEqual([...resolveSchedules(['weekly TRANSFER'], SCHEDULES)], ['s2']);
+  assert.equal(resolveSchedules([], SCHEDULES).size, 0);
+  assert.throws(
+    () => resolveSchedules(['Nope'], SCHEDULES),
+    (err) => {
+      assert.match(err.message, /^unknown schedule: Nope$/);
+      assert.equal(err.userError, true);
+      return true;
+    },
+  );
+});
+
+test('an unnamed schedule can never be matched by name', () => {
+  assert.throws(() => resolveSchedules([''], SCHEDULES), /unknown schedule/);
+});
+
+test('the account flags accumulate and refuse to be combined', () => {
+  const o = parseArgs(['--only-account', 'Checking', '--only-account', 'Savings']);
+  assert.deepEqual(o.onlyAccounts, ['Checking', 'Savings']);
+  assert.deepEqual(parseArgs([]).onlyAccounts, []);
+  assert.deepEqual(parseArgs(['--exclude-schedule', 'Rent']).excludeSchedules, ['Rent']);
+  assert.throws(
+    () => parseArgs(['--only-account', 'A', '--exclude-account', 'B']),
+    /use --exclude-account or --only-account, not both/,
   );
 });
