@@ -3,9 +3,10 @@
 // Read-only against the budget. Nothing is uploaded anywhere.
 
 import * as api from '@actual-app/api';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PRODID = '-//Ildana//actual2ics//EN';
 const MAX_OCCURRENCES = 750;
@@ -667,7 +668,8 @@ export {
   ymd,
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Compare real paths so the guard also passes through the symlink `npm install -g` creates.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
     if (err?.userError) {
       process.stderr.write(`${err.message}\n`);
