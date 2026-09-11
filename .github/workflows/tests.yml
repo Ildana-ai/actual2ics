@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: ['20', '22', '24']
+        # better-sqlite3 (pulled in by @actual-app/api) ships no Windows prebuilt binary for
+        # Node 20's ABI in any released version, including the latest — installing here would
+        # need a C++ toolchain, same as it would for a real user. Not a CI artifact: verified
+        # against every better-sqlite3 GitHub release's asset list.
+        exclude:
+          - os: windows-latest
+            node-version: '20'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install
+        run: npm ci
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Dependency vulnerability scan
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '24'
+        run: npm audit --audit-level=high
