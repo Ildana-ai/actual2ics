@@ -2,7 +2,7 @@
   <a href="https://ildana.ai">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset=".github/assets/ildana-lockup-white-512.png">
-      <img src=".github/assets/ildana-lockup-black-512.png" alt="Ildana — Augmented Intelligence" width="260">
+      <img src=".github/assets/ildana-lockup-black-512.png" alt="Ildana — Every craft, put to work." width="260">
     </picture>
   </a>
 </p>
